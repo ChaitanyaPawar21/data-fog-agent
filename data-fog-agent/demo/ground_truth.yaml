@@ -1,0 +1,358 @@
+# Written by demo/generate.py. Do not edit by hand.
+org: Chaiwala Co.
+users:
+- email: admin@chaiwala.co
+  role: admin
+  groups: []
+- email: priya.sharma@chaiwala.co
+  role: member
+  groups:
+  - sales
+- email: rahul.verma@chaiwala.co
+  role: member
+  groups:
+  - sales
+- email: anita.desai@chaiwala.co
+  role: member
+  groups:
+  - finance
+- email: vikram.rao@chaiwala.co
+  role: member
+  groups:
+  - finance
+- email: meera.iyer@chaiwala.co
+  role: member
+  groups:
+  - hr
+- email: arjun.nair@chaiwala.co
+  role: member
+  groups:
+  - support
+- email: kavya.reddy@chaiwala.co
+  role: member
+  groups:
+  - support
+sources:
+- type: postgres
+  name: sales_db
+  config:
+    dsn: user=datafog_reader password=reader dbname=sales_db host=db port=5432
+    schemas:
+    - public
+    groups:
+    - sales
+- type: postgres
+  name: finance_db
+  config:
+    dsn: user=datafog_reader password=reader dbname=finance_db host=db port=5432
+    schemas:
+    - public
+    groups:
+    - finance
+- type: postgres
+  name: support_db
+  config:
+    dsn: user=datafog_reader password=reader dbname=support_db host=db port=5432
+    schemas:
+    - public
+    groups:
+    - support
+- type: files
+  name: drive
+  config:
+    path: /demo/output/drive
+    folder_groups:
+      sales:
+      - sales
+      finance:
+      - finance
+      hr:
+      - hr
+- type: slack_export
+  name: slack
+  config:
+    path: /demo/output/slack
+    channel_groups:
+      data:
+      - sales
+      - finance
+      - hr
+      - support
+      sales:
+      - sales
+      finance:
+      - finance
+catalogue:
+- asset: sales_db.public.active_customers
+  groups: &id001
+  - sales
+- asset: sales_db.public.customers
+  groups: *id001
+- asset: sales_db.public.customers_backup_2023
+  groups: *id001
+- asset: sales_db.public.customers_new
+  groups: *id001
+- asset: sales_db.public.ord_dtl
+  groups: *id001
+- asset: sales_db.public.orders
+  groups: *id001
+- asset: sales_db.public.orders_v2
+  groups: *id001
+- asset: sales_db.public.sales_2023
+  groups: *id001
+- asset: finance_db.public.refunds
+  groups: &id002
+  - finance
+- asset: finance_db.public.revenue_monthly
+  groups: *id002
+- asset: finance_db.public.tbl_cst_mst
+  groups: *id002
+- asset: support_db.public.app_logs
+  groups: &id003
+  - support
+- asset: support_db.public.tickets
+  groups: *id003
+- asset: drive:finance/metrics_policy.pdf
+  groups: &id004
+  - finance
+- asset: drive:finance/targets_2026.xlsx
+  groups: *id004
+- asset: drive:hr/employee_list.xlsx
+  groups:
+  - hr
+- asset: drive:sales/orders_export_jan (1).csv
+  groups: &id005
+  - sales
+- asset: drive:sales/orders_export_jan.csv
+  groups: *id005
+- asset: drive:sales/sales_report_FINAL_use_this.xlsx
+  groups: *id005
+- asset: drive:sales/sales_report_final.xlsx
+  groups: *id005
+- asset: drive:sales/sales_report_final_v2.xlsx
+  groups: *id005
+- asset: slack:data
+  groups:
+  - sales
+  - finance
+  - hr
+  - support
+- asset: slack:sales
+  groups:
+  - sales
+- asset: slack:finance
+  groups:
+  - finance
+duplicate_groups:
+- kind: file_merge
+  files:
+  - sales_report_final.xlsx
+  - sales_report_final_v2.xlsx
+  - sales_report_FINAL_use_this.xlsx
+  key_column: order_id
+  total_rows: 300
+  exact_duplicate_rows: 155
+  conflicting_keys:
+  - 2771
+  - 2797
+  - 2824
+  - 2840
+  merged_rows: 140
+  amount_column: amount_rupees
+  merged_amount_sum: 339414.0
+- kind: file_merge
+  files:
+  - orders_export_jan.csv
+  - orders_export_jan (1).csv
+  key_column: order_id
+  total_rows: 312
+  exact_duplicate_rows: 156
+  conflicting_keys: []
+  merged_rows: 156
+  amount_column: amount
+  merged_amount_sum: 40001200.0
+- kind: overlapping_tables
+  assets:
+  - sales_db.public.orders
+  - sales_db.public.orders_v2
+  preferred: sales_db.public.orders_v2
+- kind: overlapping_tables
+  assets:
+  - sales_db.public.customers
+  - sales_db.public.customers_new
+  - sales_db.public.customers_backup_2023
+  - finance_db.public.tbl_cst_mst
+  preferred: sales_db.public.customers_new
+pii_columns:
+- asset: sales_db.public.customers
+  column: name
+  pii_types:
+  - PERSON
+  hidden: false
+- asset: sales_db.public.customers
+  column: email
+  pii_types:
+  - EMAIL
+  hidden: false
+- asset: sales_db.public.customers
+  column: phone
+  pii_types:
+  - PHONE
+  hidden: false
+- asset: sales_db.public.customers
+  column: city
+  pii_types:
+  - LOCATION
+  hidden: false
+- asset: sales_db.public.customers_new
+  column: full_name
+  pii_types:
+  - PERSON
+  hidden: false
+- asset: sales_db.public.customers_new
+  column: email
+  pii_types:
+  - EMAIL
+  hidden: false
+- asset: sales_db.public.customers_new
+  column: phone
+  pii_types:
+  - PHONE
+  hidden: false
+- asset: sales_db.public.customers_new
+  column: city
+  pii_types:
+  - LOCATION
+  hidden: false
+- asset: sales_db.public.customers_backup_2023
+  column: name
+  pii_types:
+  - PERSON
+  hidden: false
+- asset: sales_db.public.customers_backup_2023
+  column: email
+  pii_types:
+  - EMAIL
+  hidden: false
+- asset: sales_db.public.customers_backup_2023
+  column: phone
+  pii_types:
+  - PHONE
+  hidden: false
+- asset: sales_db.public.customers_backup_2023
+  column: city
+  pii_types:
+  - LOCATION
+  hidden: false
+- asset: sales_db.public.customers_new
+  column: address
+  pii_types:
+  - LOCATION
+  hidden: false
+- asset: finance_db.public.tbl_cst_mst
+  column: col_2
+  pii_types:
+  - PERSON
+  hidden: true
+- asset: finance_db.public.tbl_cst_mst
+  column: col_3
+  pii_types:
+  - PHONE
+  hidden: true
+- asset: finance_db.public.tbl_cst_mst
+  column: col_4
+  pii_types:
+  - EMAIL
+  hidden: true
+- asset: finance_db.public.tbl_cst_mst
+  column: col_5
+  pii_types:
+  - LOCATION
+  hidden: true
+- asset: finance_db.public.tbl_cst_mst
+  column: col_6
+  pii_types:
+  - PAN
+  hidden: true
+- asset: support_db.public.tickets
+  column: notes
+  pii_types:
+  - PHONE
+  - AADHAAR
+  hidden: true
+- asset: support_db.public.app_logs
+  column: message
+  pii_types:
+  - EMAIL
+  hidden: true
+- asset: drive:hr/employee_list.xlsx
+  column: name
+  pii_types:
+  - PERSON
+  hidden: false
+- asset: drive:hr/employee_list.xlsx
+  column: email
+  pii_types:
+  - EMAIL
+  hidden: false
+- asset: drive:hr/employee_list.xlsx
+  column: phone
+  pii_types:
+  - PHONE
+  hidden: false
+- asset: drive:hr/employee_list.xlsx
+  column: pan
+  pii_types:
+  - PAN
+  hidden: false
+- asset: drive:hr/employee_list.xlsx
+  column: aadhaar
+  pii_types:
+  - AADHAAR
+  hidden: false
+- asset: drive:hr/employee_list.xlsx
+  column: city
+  pii_types:
+  - LOCATION
+  hidden: false
+tickets_notes_rows_with_pii:
+  phone: 51
+  aadhaar: 27
+stale_assets:
+- asset: sales_db.public.sales_2023
+  signal: newest month is 2023-12
+- asset: sales_db.public.orders
+  signal: newest order is 2025-12-31
+- asset: sales_db.public.customers
+  signal: newest signup is on or before 2025-06-30
+- asset: drive:finance/metrics_policy.pdf
+  signal: file modified 400 days ago
+- asset: drive:sales/orders_export_jan.csv
+  signal: file modified 280 days ago
+- asset: drive:sales/orders_export_jan (1).csv
+  signal: file modified 280 days ago
+planted_problems:
+- orders.amount is rupees, orders_v2.amount is paise (same column name)
+- orders stopped updating after 2025-12-31; orders_v2 is current
+- customers_backup_2023.signup_date is text in DD/MM/YYYY
+- sales_2023 and sales dashboards show gross revenue; finance shows net of returns
+- metrics_policy.pdf defines active customer as 60 days; view active_customers uses 90
+- tbl_cst_mst has cryptic columns col_1..col_7 holding customer PII
+answers:
+  latest_orders_table: sales_db.public.orders_v2
+  orders_v2_row_count: 3000
+  net_revenue_2026_03_rupees: 241626.0
+  gross_revenue_2026_03_rupees: 270665.0
+  columns_with_phone_numbers:
+  - sales_db.public.customers.phone
+  - sales_db.public.customers_new.phone
+  - sales_db.public.customers_backup_2023.phone
+  - finance_db.public.tbl_cst_mst.col_3
+  - support_db.public.tickets.notes
+  customer_data_owner: priya.sharma@chaiwala.co
+  customer_master_table: sales_db.public.customers_new
+  active_customer_days_policy: 60
+  active_customer_days_in_view: 90
+  targets_source: drive:finance/targets_2026.xlsx
+  correct_sales_report: drive:sales/sales_report_FINAL_use_this.xlsx
+  hr_only_asset: drive:hr/employee_list.xlsx

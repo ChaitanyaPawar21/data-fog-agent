@@ -1,0 +1,49 @@
+[project]
+name = "data-fog-agent"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = [
+    "alembic>=1.20.1",
+    "argon2-cffi>=25.1.0",
+    "arq>=0.28.0",
+    "cryptography>=50.0.2",
+    "en-core-web-sm",
+    "fastapi>=0.162.5",
+    "openai>=3.49.0",
+    "openpyxl>=3.1.5",
+    "pandas>=3.1.1",
+    "pgvector>=0.5.1",
+    "presidio-analyzer>=2.2.366",
+    "psycopg[binary]>=3.3.9",
+    "pyjwt>=2.15.1",
+    "redis>=5",
+    "sqlalchemy>=2.0",
+    "sqlglot>=30.31.0",
+    "uvicorn[standard]>=0.54.0",
+]
+
+[tool.ruff]
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.uv.sources]
+en-core-web-sm = { url = "https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl" }
+
+[dependency-groups]
+dev = [
+    "faker>=40.54.0",
+    "fpdf2>=2.9.0",
+    "httpx>=0.28.1",
+    "pytest>=9.2.0",
+    "pyyaml>=6.0.3",
+    "ruff>=0.17.4",
+]
+
+[tool.ruff.lint.flake8-bugbear]
+# FastAPI's Depends(...) in defaults is the intended way to declare dependencies.
+extend-immutable-calls = ["fastapi.Depends", "fastapi.Cookie"]

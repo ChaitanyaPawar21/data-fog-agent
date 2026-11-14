@@ -1,0 +1,103 @@
+# Production. Copy .env.prod.example to .env.prod, fill it in, then:
+#   docker compose -f docker-compose.prod.yml --env-file .env.prod up -d --build
+# Only Caddy is reachable from outside (ports 80 and 443). See docs/deploy.md.
+name: datafog-prod
+
+x-defaults: &defaults
+  restart: unless-stopped
+  # Docker keeps container logs forever by default, which fills a small server's disk.
+  logging:
+    options:
+      max-size: "10m"
+      max-file: "5"
+
+x-backend: &backend
+  <<: *defaults
+  build: ./backend
+  env_file: .env.prod
+  environment:
+    PYTHONPATH: /app
+    DATABASE_URL: postgresql+psycopg://app:${APP_DB_PASSWORD:?set APP_DB_PASSWORD in .env.prod}@db:5432/datafog
+    DEMO_ADMIN_DATABASE_URL: postgresql://postgres:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env.prod}@db:5432/postgres
+    REDIS_URL: redis://redis:6379
+    COOKIE_SECURE: "true"
+    # Trust X-Forwarded-For from Caddy, so rate limits see the visitor's IP, not Caddy's.
+    # Safe because the backend isn't published: only containers on this network reach it.
+    # (Set here, not as --forwarded-allow-ips='*' inside sh -c, where the quotes stay literal.)
+    FORWARDED_ALLOW_IPS: "*"
+  volumes:
+    # The demo company. Not needed once real sources are connected.
+    - ./demo:/demo
+
+services:
+  db:
+    <<: *defaults
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env.prod}
+      APP_DB_PASSWORD: ${APP_DB_PASSWORD:?set APP_DB_PASSWORD in .env.prod}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./infra/postgres-init-prod.sh:/docker-entrypoint-initdb.d/init.sh:ro
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "postgres"]
+      interval: 5s
+      retries: 30
+
+  redis:
+    <<: *defaults
+    image: redis:7-alpine
+
+  backend:
+    <<: *backend
+    # Migrations run once here, before the API workers start.
+    command: >
+      sh -c "uv run alembic upgrade head &&
+             uv run uvicorn app.main:app --host 0.0.0.0 --workers 2 --proxy-headers"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health')"]
+      interval: 10s
+      retries: 30
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_started
+
+  worker:
+    <<: *backend
+    command: uv run arq app.worker.WorkerSettings
+    depends_on:
+      backend:
+        condition: service_healthy
+
+  frontend:
+    <<: *defaults
+    build:
+      context: ./frontend
+      target: prod
+    depends_on:
+      - backend
+
+  caddy:
+    <<: *defaults
+    image: caddy:2-alpine
+    environment:
+      DOMAIN: ${DOMAIN:?set DOMAIN in .env.prod}
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - ./infra/Caddyfile:/etc/caddy/Caddyfile:ro
+      # HTTPS certificates. Keep this volume, or Let's Encrypt rate limits can bite.
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - frontend
+      - backend
+
+volumes:
+  pgdata:
+  caddy_data:
+  caddy_config:

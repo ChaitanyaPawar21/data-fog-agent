@@ -1,0 +1,115 @@
+# The app lives in data-fog-agent/. Workflows only run from the repository root, so this file is here.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  backend:
+    runs-on: ubuntu-latest
+    services:
+      db:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 2s
+          --health-retries 30
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+    defaults:
+      run:
+        working-directory: data-fog-agent/backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+
+      - name: Create app role and databases
+        run: psql -h localhost -U postgres -f ../infra/postgres-init.sql
+        env:
+          PGPASSWORD: postgres
+
+      - run: uv sync --frozen
+      - run: uv run ruff check .
+      - run: uv run ruff format --check .
+      - run: uv run pytest
+        env:
+          TEST_DATABASE_URL: postgresql+psycopg://app:app@localhost:5432/datafog_test
+          REDIS_URL: redis://localhost:6379
+          DEMO_ADMIN_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/postgres
+
+  frontend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: data-fog-agent/frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: data-fog-agent/frontend/package-lock.json
+      - run: npm ci
+      - run: npx next typegen
+      - run: npx tsc --noEmit
+      - run: npm run lint
+      - run: npm run build
+
+  evals:
+    # The eval suite against the demo company: PII recall, merge detection and the questions.
+    # The questions need a model key. Without the LLM_API_KEY secret (forks, for example)
+    # they are skipped and the other two checks still run.
+    runs-on: ubuntu-latest
+    needs: backend
+    services:
+      db:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 2s
+          --health-retries 30
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+    defaults:
+      run:
+        working-directory: data-fog-agent/backend
+    env:
+      DATABASE_URL: postgresql+psycopg://app:app@localhost:5432/datafog
+      REDIS_URL: redis://localhost:6379
+      DEMO_ADMIN_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/postgres
+      # Throwaway values: this database only ever holds the generated demo company.
+      JWT_SECRET: ci-only-secret-that-is-long-enough-for-hs256
+      CONFIG_ENCRYPTION_KEY: Fhb4K3ZQhS0n2b2c5VJd3u0tq4W7O2bW8x3mJvYpZ1k=
+      LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
+      EMBEDDING_API_KEY: ${{ secrets.EMBEDDING_API_KEY }}
+      # Lets demo/generate.py and evals/run_evals.py import the app package.
+      PYTHONPATH: .
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+
+      - name: Create app role and databases
+        run: psql -h localhost -U postgres -f ../infra/postgres-init.sql
+        env:
+          PGPASSWORD: postgres
+
+      - run: uv sync --frozen
+      - run: uv run alembic upgrade head
+      - name: Build the demo company
+        run: uv run python ../demo/generate.py
+      - name: Run the evals
+        run: uv run python ../evals/run_evals.py --prepare

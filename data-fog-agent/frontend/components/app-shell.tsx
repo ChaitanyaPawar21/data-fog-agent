@@ -38,14 +38,16 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     { href: "/chat", label: "Chat" },
     { href: "/catalog", label: "Catalogue" },
     { href: "/approvals", label: "Approvals" },
+    { href: "/alerts", label: "Alerts" },
   ];
   if (user.role === "admin") links.push({ href: "/sources", label: "Sources" });
+  links.push({ href: "/settings", label: "Settings" });
 
   return (
     <UserContext.Provider value={user}>
-      <header className="flex items-center gap-6 border-b px-6 py-3">
+      <header className="flex flex-wrap items-center gap-x-6 gap-y-2 border-b px-6 py-3">
         <span className="font-semibold">Data Fog Agent</span>
-        <nav className="flex gap-4 text-sm">
+        <nav className="flex flex-wrap gap-x-4 gap-y-1 text-sm">
           {links.map((link) => (
             <Link
               key={link.href}

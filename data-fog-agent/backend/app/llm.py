@@ -3,10 +3,16 @@
 Never pass credentials or unmasked personal data to these functions.
 """
 
-from openai import OpenAI
-
 from app import config
 from app.models import EMBEDDING_DIM
+
+# With Langfuse keys set, every model call is traced there. Its client is a drop-in for the
+# OpenAI one and reads LANGFUSE_PUBLIC_KEY, LANGFUSE_SECRET_KEY and LANGFUSE_HOST by itself.
+# A trace holds exactly what the model was sent, so it is PII-masked like the request was.
+if config.LANGFUSE_ENABLED:
+    from langfuse.openai import OpenAI
+else:
+    from openai import OpenAI
 
 
 def embed_texts(texts: list[str]) -> list[list[float]]:

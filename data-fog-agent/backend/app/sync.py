@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 from app.connectors import files, postgres, slack_export
 from app.db import system_session
 from app.models import (
+    Alert,
     Asset,
     AssetColumn,
     AssetPermission,
@@ -84,7 +85,8 @@ def save_asset(db: Session, source: Source, found: dict) -> int:
     asset = db.scalar(
         select(Asset).where(Asset.source_id == source.id, Asset.path == found["path"])
     )
-    if asset is None:
+    is_new = asset is None
+    if is_new:
         asset = Asset(org_id=source.org_id, source_id=source.id, path=found["path"])
         db.add(asset)
 
@@ -99,28 +101,49 @@ def save_asset(db: Session, source: Source, found: dict) -> int:
     asset.embedding = None
     db.flush()
 
-    save_columns(db, asset, found["columns"])
+    changes = save_columns(db, asset, found["columns"])
+    if changes and not is_new:
+        db.add(
+            Alert(
+                org_id=asset.org_id,
+                asset_id=asset.id,
+                type="schema_change",
+                message=f"Columns changed in {asset.name}: {'; '.join(changes)}.",
+            )
+        )
     save_permissions(db, asset, found["groups"])
     if "snippets" in found:
         save_snippets(db, asset, found["snippets"])
     return asset.id
 
 
-def save_columns(db: Session, asset: Asset, found_columns: list[dict]):
+def save_columns(db: Session, asset: Asset, found_columns: list[dict]) -> list[str]:
+    """Brings the asset's columns in line with the source. Returns what changed, in words."""
     # Update columns in place so descriptions and PII tags survive a re-sync.
     existing = {
         column.name: column
         for column in db.scalars(select(AssetColumn).where(AssetColumn.asset_id == asset.id))
     }
+    added, retyped = [], []
     for found in found_columns:
         column = existing.pop(found["name"], None)
         if column is None:
             column = AssetColumn(org_id=asset.org_id, asset_id=asset.id, name=found["name"])
             db.add(column)
+            added.append(found["name"])
+        elif column.data_type != found["data_type"]:
+            retyped.append(f"{column.name} is now {found['data_type']} (was {column.data_type})")
         column.data_type = found["data_type"]
     # Columns that were dropped in the source. This is catalogue metadata, not user data.
     for removed in existing.values():
         db.delete(removed)
+
+    changes = []
+    if added:
+        changes.append("added " + ", ".join(added))
+    if existing:
+        changes.append("removed " + ", ".join(existing))
+    return changes + retyped
 
 
 def save_permissions(db: Session, asset: Asset, group_names: list[str]):

@@ -25,6 +25,15 @@ LLM_API_KEY = os.environ.get("LLM_API_KEY", "")
 LLM_BASE_URL = os.environ.get("LLM_BASE_URL") or "https://integrate.api.nvidia.com/v1"
 LLM_MODEL = os.environ.get("LLM_MODEL") or "nvidia/nemotron-3.5-lightning-30b-a3b"
 
+# Optional LLM tracing. On when both keys are set (see llm.py).
+LANGFUSE_ENABLED = bool(
+    os.environ.get("LANGFUSE_PUBLIC_KEY") and os.environ.get("LANGFUSE_SECRET_KEY")
+)
+# Langfuse reads LANGFUSE_HOST itself. Left empty in .env it would be used as the address,
+# so an empty one is removed and Langfuse falls back to its cloud address.
+if not os.environ.get("LANGFUSE_HOST"):
+    os.environ.pop("LANGFUSE_HOST", None)
+
 # Auto-Docs is one JSON answer per asset, so a small fast model is enough. Same base URL as
 # chat; each setting falls back to the chat one when it's empty.
 DOCS_API_KEY = os.environ.get("DOCS_API_KEY") or LLM_API_KEY

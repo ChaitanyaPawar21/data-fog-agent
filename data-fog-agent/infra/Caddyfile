@@ -5,6 +5,11 @@
 		reverse_proxy backend:8000
 	}
 
+	# The MCP endpoint for Claude and other MCP clients (API token required).
+	handle /mcp {
+		reverse_proxy backend:8000
+	}
+
 	handle {
 		reverse_proxy frontend:3000
 	}

@@ -231,3 +231,85 @@ Each entry: what broke, the options, what was chosen and why.
 **Chosen:** `DOCS_MODEL` / `DOCS_API_KEY`, both falling back to the chat settings. I smoke-tested 8 models the key could list (several were 404 or timed out), then benchmarked the two that worked on the real docs prompt: median 19.5s → 1.7s, 1,599 → 121 completion tokens, 6/6 valid JSON for both.
 
 **Why it matters:** I matched each model to how hard its task is, and I measured the change instead of assuming a smaller model is good enough.
+
+## 15. A safety rule that slowly corrupted its own labels (PII Guard)
+
+**Problem:** PII tags only grow, so a lucky sample can never unmask a column. But a benchmark that re-scanned the catalogue 6 times raised 2 new alerts: the PAN column became "PAN, PERSON" and a city column gained PERSON. Nothing in the data had changed.
+
+**Cause:** Sampling used `ORDER BY random()`, so every scan saw different values. A column sitting near the 20% line crossed it on some scans, and because tags only grow, every crossing stuck. The names-or-places fallback made it worse by adding PERSON to columns already identified as PAN. Over months of 6-hourly syncs every borderline column would collect every kind.
+
+**Chosen:** Seed the sampler (`setseed` per column), so the same data gives the same sample and the same verdict; a new tag now means the data changed. And only use the fallback on columns nothing else matched. The "tags only grow" rule stays: it's right, it just needs deterministic inputs.
+
+**Why it matters:** Two individually sensible rules (random sampling, never remove a tag) combined into a ratchet. A single scan in a test can't show it; running the same scan repeatedly did. The same change also batched the NER calls, 48.5s to 8.6s for a full scan.
+
+## 16. A backup table that looked fresher than the real one (Trust Score)
+
+**Problem:** The trust score gives up to 30 points for freshness. `customers_backup_2023`, a stale backup with its dates stored as text, came out as "modified 2 days ago" and would have outranked `customers_new`, the table everyone should use.
+
+**Cause:** Postgres keeps no "last modified" time for a table. The connector used the newest date in the data, and for tables with no date column fell back to the latest vacuum/analyze time. Those run whenever Postgres decides to tidy up, so they say nothing about the data. The backup has no real date column, so it got the fallback.
+
+**Options:**
+- Track changes across syncs (row-change counters) and stamp the sync time when they move. Accurate after the first change, but more state for a fallback.
+- Treat "no date column" as unknown freshness: 0 points.
+
+**Chosen:** Unknown is not fresh. The fallback is gone; such tables score 0 for freshness and the asset page shows "unknown". The backup now scores 0 and `customers_new` 50.
+
+**Why it matters:** A trust score is only useful if its inputs mean what they say. A signal that's "usually close" (maintenance times) is worse than no signal, because it's confidently wrong in exactly the cases that matter: stale copies nobody writes to.
+
+## 17. A sync that would quietly widen who can see merged data (File Merger)
+
+**Problem:** A merged file must be visible only to groups that could see *every* original (the intersection). The merge job set that, then ran a sync to catalogue the new file. But sync assigns a file's groups from its folder: an export merged from `sales/` (sales + finance) and `finance/` (finance only) landed in `sales/` and would have been opened up to sales, data the sales team couldn't see before.
+
+**Options:**
+- Teach sync about merged files (a flag on the asset). More state, and every connector change has to remember it.
+- Run sync first, then narrow the groups. Sync only rewrites groups when a file changes, so they stay narrowed.
+
+**Chosen:** Sync, then narrow. A test puts one copy in a finance-only folder, merges, checks the result is finance-only, then syncs again and checks it still is. The known gap (someone edits the merged file → it gets its folder's groups) is written down rather than hidden.
+
+**Why it matters:** The permission rule was right in the merge code and wrong in the system, because another component owned the same field. Testing the case where the folders' groups differ is what exposed it; with all copies in one folder the intersection and the folder's groups are the same and every test passes.
+
+## 18. MCP auth: the SDK's built-in auth wanted OAuth, the spec wanted personal tokens (MCP Server)
+
+**Problem:** The MCP server has to know which user is calling, so it can apply that user's permissions. The MCP SDK ships auth support, but it is shaped for OAuth: it needs an issuer URL and advertises OAuth metadata, which would send clients like Claude looking for a login flow that doesn't exist. v1 only needs per-user API tokens made in the UI.
+
+**Options:**
+- Use the SDK's token verifier and fake the OAuth settings. Works until a client believes the metadata.
+- Check the token inside every tool. Unauthenticated requests would still reach the SDK, and every new tool has to remember the check.
+- Put a small ASGI wrapper in front of the MCP app: no valid token, no entry (401). It attaches the user to the request, and the tools read it from there.
+
+**Chosen:** The wrapper. Tokens are 32 random bytes shown once; only the SHA-256 is stored (a slow password hash adds nothing when there is nothing to guess). Each tool is a three-line function that calls `agent.run_tool` with actor `mcp`, so MCP has no permission code of its own: the tests for hidden assets and SQL safety are the same checks the chat agent goes through.
+
+**Why it matters:** Two details only show up once it runs like production. The server is stateless, because the API runs as two worker processes and an in-memory MCP session would be lost whenever the next request lands on the other one. And the SDK's Host-header check (DNS rebinding protection) had to go: it is meant for unauthenticated servers on localhost and would reject every request arriving through Caddy under the real domain.
+
+## 19. Code written for an SDK one major version behind (MCP Server, tracing)
+
+**Problem:** The MCP server was first written against `FastMCP`, the API every tutorial shows. The install then brought `mcp` 2.3, where `FastMCP` is gone (now `MCPServer`), transport settings moved from the constructor to `streamable_http_app()`, and the client helper was renamed. Langfuse came as v5, where `LANGFUSE_HOST` is deprecated and, left empty in `.env`, is used as the address instead of falling back to the cloud one.
+
+**Options:**
+- Pin the old majors (`mcp<2`) and keep the code. Fast, but ships a new project on a version line that is already being retired.
+- Read the installed package and port the code.
+
+**Chosen:** Ported, by reading the installed source rather than guessing: the constructor signature, where the session manager lives, how a tool gets at the HTTP request. For Langfuse, an empty `LANGFUSE_HOST` is dropped at startup so the default applies.
+
+**Why it matters:** Tests against a fake would have passed on either version. What caught it was running the real thing: a real MCP client through the Next.js proxy, and one real question with Langfuse pointed at a local recorder, which also showed the trace carried `XXXX3210` and not the phone number typed into the question.
+
+## 20. Matched ignoring case, indexed with exact case (File Merger)
+
+**Problem:** Merge detection groups files whose column names match after lowercasing, so `Order_ID, Amount` and `order_id, amount` count as the same columns. The code that then lined the files up used the exact names, so the daily job would crash with a KeyError on the first pair of files whose headers differed only in case. The demo files all share one spelling, so no test saw it.
+
+**Options:**
+- Match exact names only. Simple, but exports from different tools really do differ in header case.
+- Lowercase every header on load. Changes the headers of the merged file people get.
+- Rename each file's columns to the oldest file's spelling when lining them up.
+
+**Chosen:** The rename, in one helper used by detection, the preview and the merge itself. The first version of the fix was itself inconsistent: the preview lined files up against one file and the merge against another, so the key column name saved in the proposal didn't exist at merge time. The new test (propose, approve, execute on two such files) failed on exactly that before it passed.
+
+**Why it matters:** "Compare normalised, then use raw" is a bug pattern worth looking for whenever two code paths touch the same names. And the fix needed a test that runs the whole flow, because each half was right on its own.
+
+## 21. CI that never ran, and an empty chat for every closed tab (production polish)
+
+**Problem:** Two things that looked done. The GitHub Actions workflow lived in `data-fog-agent/.github/`, but the repository root is one level up and GitHub only reads workflows from the root, so CI had never run. And a new chat was saved before the answer started, so closing the tab mid-answer (or a model error) left an empty conversation in the list forever.
+
+**Chosen:** Moved the workflow to the root with `working-directory: data-fog-agent/...`, and added a frontend job (types, lint, build) and the eval job. The conversation is now saved together with its first answer, and the browser learns its id in the last event of the stream, so there is nothing half-made to clean up.
+
+**Why it matters:** Neither shows up in a test run: the test suite passes locally whether or not CI exists, and tests never close a tab. Both were found by asking "what happens after this leaves my machine" rather than "does it pass".

@@ -8,12 +8,12 @@ import json
 import re
 from pathlib import PurePosixPath
 
-from openai import OpenAI
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app import config
 from app.db import system_session
+from app.llm import OpenAI
 from app.models import Asset, AssetColumn, AssetPermission, KnowledgeSnippet, Proposal, Source
 from app.pii import mask_pii_in_text
 from app.source_config import decrypt_config

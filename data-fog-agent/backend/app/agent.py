@@ -1,9 +1,10 @@
-"""The chat agent: an LLM with five read-only tools, in a loop of at most 8 model calls.
+"""The chat agent: an LLM with six read-only tools, in a loop of at most 8 model calls.
 
 The model is reached through an OpenAI-compatible API (NVIDIA's by default, see config).
 
 Everything a tool returns goes to the model, so every tool checks permissions with
-`visible_asset_ids` and masks personal data before returning.
+`visible_asset_ids` and masks personal data before returning. The MCP server calls the
+same tools through `run_tool`, so both share one set of permission checks.
 """
 
 import json
@@ -11,12 +12,12 @@ import re
 from collections.abc import Iterator
 
 import psycopg
-from openai import OpenAI
 from sqlalchemy import exists, or_, select
 from sqlalchemy.orm import Session
 
-from app import config, llm
+from app import config, llm, merger
 from app.audit import audit
+from app.llm import OpenAI
 from app.models import Asset, AssetColumn, KnowledgeSnippet, Source, User
 from app.permissions import visible_asset_ids
 from app.pii import mask_pii_in_text
@@ -101,6 +102,12 @@ TOOLS = [
         query=TEXT,
     ),
     tool("find_owner", "The recorded owner of an asset: name and email.", asset_id=ID),
+    tool(
+        "list_pii_columns",
+        "Every column tagged as personal data: its asset, the column name and the kinds found "
+        "(PHONE, EMAIL, AADHAAR, PAN, PERSON, LOCATION). Use it for questions like 'which "
+        "tables hold phone numbers'. Values are never included.",
+    ),
 ]
 
 
@@ -192,7 +199,9 @@ def table_name(asset: Asset) -> str:
     return asset.path.split(".", 1)[1]
 
 
-def run_sql(db: Session, user: User, source_id: int, sql: str) -> tuple[dict, list[int]]:
+def run_sql(
+    db: Session, user: User, source_id: int, sql: str, actor: str = "agent"
+) -> tuple[dict, list[int]]:
     source = db.get(Source, source_id)
     if source is None or source.type != "postgres":
         return {"error": "That source id is not a database you can query."}, []
@@ -215,7 +224,7 @@ def run_sql(db: Session, user: User, source_id: int, sql: str) -> tuple[dict, li
         audit(
             db,
             user,
-            "agent",
+            actor,
             "sql_rejected",
             f"source:{source.id}",
             {"sql": sql, "reason": str(rejection)},
@@ -234,14 +243,12 @@ def run_sql(db: Session, user: User, source_id: int, sql: str) -> tuple[dict, li
     try:
         result = run_select(decrypt_config(source.encrypted_config)["dsn"], query, pii_columns)
     except psycopg.Error as error:
-        audit(
-            db, user, "agent", "sql_failed", f"source:{source.id}", details | {"error": str(error)}
-        )
+        audit(db, user, actor, "sql_failed", f"source:{source.id}", details | {"error": str(error)})
         # Postgres errors can quote values from the data, so they're masked too.
         return {"error": f"The database returned an error: {mask_pii_in_text(str(error))}"}, []
 
     audit(
-        db, user, "agent", "run_sql", f"source:{source.id}", details | {"rows": len(result["rows"])}
+        db, user, actor, "run_sql", f"source:{source.id}", details | {"rows": len(result["rows"])}
     )
     return result, asset_ids
 
@@ -295,12 +302,33 @@ def find_owner(db: Session, user: User, asset_id: int) -> tuple[dict, list[int]]
     return {"owner": {"name": owner.name, "email": owner.email}}, [asset.id]
 
 
+def list_pii_columns(db: Session, user: User) -> tuple[dict, list[int]]:
+    rows = db.execute(
+        select(Asset.id, Asset.path, AssetColumn.name, AssetColumn.pii_type)
+        .join(AssetColumn, AssetColumn.asset_id == Asset.id)
+        .where(
+            Asset.id.in_(visible_asset_ids(user)),
+            Asset.archived.is_(False),
+            AssetColumn.pii_type.is_not(None),
+        )
+        .order_by(Asset.path, AssetColumn.id)
+    ).all()
+    columns = [
+        {"asset_id": asset_id, "asset": path, "column": name, "personal_data": kinds}
+        for asset_id, path, name, kinds in rows
+    ]
+    return {"columns": columns}, sorted({asset_id for asset_id, *_ in rows})
+
+
 TOOL_FUNCTIONS = {
     "search_catalog": search_catalog,
     "get_schema": get_schema,
     "run_sql": run_sql,
     "search_knowledge": search_knowledge,
     "find_owner": find_owner,
+    "list_pii_columns": list_pii_columns,
+    # Offered over MCP only: the chat model isn't given this one (it's not in TOOLS).
+    "propose_merge": merger.propose_merge,
 }
 
 
@@ -328,11 +356,21 @@ def parse_arguments(name: str, raw_arguments: str) -> dict | None:
     return arguments
 
 
-def run_tool(db: Session, user: User, name: str, arguments: dict) -> tuple[dict, list[int]]:
-    """Returns (result for the model, ids of the assets the answer may cite)."""
-    if name != "run_sql":  # run_sql writes its own, more detailed entry
-        audit(db, user, "agent", name, None, arguments)
-    return TOOL_FUNCTIONS[name](db, user, **arguments)
+def run_tool(
+    db: Session, user: User, name: str, arguments: dict, actor: str = "agent"
+) -> tuple[dict, list[int]]:
+    """Returns (result for the model, ids of the assets the answer may cite).
+
+    `actor` is who is calling, for the audit log: "agent" for chat, "mcp" for MCP clients.
+    """
+    if name == "run_sql":  # writes its own, more detailed audit entries
+        return run_sql(db, user, **arguments, actor=actor)
+    result, asset_ids = TOOL_FUNCTIONS[name](db, user, **arguments)
+    # Trust scores count these as "used recently": what the tool cited, plus what a
+    # search turned up (search results aren't citable, but they were looked at).
+    seen = sorted(set(asset_ids) | {asset["id"] for asset in result.get("assets", [])})
+    audit(db, user, actor, name, None, arguments | {"asset_ids": seen})
+    return result, asset_ids
 
 
 # ---------------------------------------------------------------- the loop

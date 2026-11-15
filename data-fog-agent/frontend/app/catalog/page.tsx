@@ -30,6 +30,7 @@ function Catalog() {
   const [type, setType] = useState("");
   const [pii, setPii] = useState("");
   const [sourceId, setSourceId] = useState("");
+  const [minTrust, setMinTrust] = useState("");
   const [assets, setAssets] = useState<AssetSummary[] | null>(null);
   // Members can't list sources, so the source filter is built from what search returns.
   const [sources, setSources] = useState<Map<number, string>>(new Map());
@@ -40,6 +41,7 @@ function Catalog() {
     if (type) params.set("type", type);
     if (pii) params.set("has_pii", pii);
     if (sourceId) params.set("source_id", sourceId);
+    if (minTrust) params.set("min_trust", minTrust);
 
     // Wait for a pause in typing, and ignore answers to searches that were replaced.
     let cancelled = false;
@@ -58,7 +60,7 @@ function Catalog() {
       cancelled = true;
       clearTimeout(timer);
     };
-  }, [query, type, pii, sourceId]);
+  }, [query, type, pii, sourceId, minTrust]);
 
   return (
     <div className="flex flex-col gap-4">
@@ -106,6 +108,16 @@ function Catalog() {
           <option value="true">Has personal data</option>
           <option value="false">No personal data</option>
         </select>
+        <select
+          aria-label="Trust score"
+          className={selectClassName}
+          value={minTrust}
+          onChange={(event) => setMinTrust(event.target.value)}
+        >
+          <option value="">Any trust</option>
+          <option value="50">Trust 50+</option>
+          <option value="70">Trust 70+</option>
+        </select>
       </div>
 
       {assets === null ? (
@@ -117,6 +129,7 @@ function Catalog() {
           <TableHeader>
             <TableRow>
               <TableHead>Name</TableHead>
+              <TableHead className="text-right">Trust</TableHead>
               <TableHead>Type</TableHead>
               <TableHead>Source</TableHead>
               <TableHead className="text-right">Rows</TableHead>
@@ -137,6 +150,9 @@ function Catalog() {
                     </Badge>
                   )}
                   <div className="text-xs text-muted-foreground">{asset.path}</div>
+                </TableCell>
+                <TableCell className="text-right tabular-nums">
+                  {asset.trust_score ?? "—"}
                 </TableCell>
                 <TableCell className="capitalize">{asset.type}</TableCell>
                 <TableCell>{asset.source_name}</TableCell>

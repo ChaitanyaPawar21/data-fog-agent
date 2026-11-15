@@ -12,8 +12,7 @@ from psycopg import sql
 
 TABLES_QUERY = """
     SELECT t.table_schema, t.table_name, t.table_type, c.reltuples::bigint,
-           s.n_tup_ins + s.n_tup_upd + s.n_tup_del AS row_changes,
-           greatest(s.last_vacuum, s.last_autovacuum, s.last_analyze, s.last_autoanalyze)
+           s.n_tup_ins + s.n_tup_upd + s.n_tup_del AS row_changes
     FROM information_schema.tables t
     JOIN pg_namespace n ON n.nspname = t.table_schema
     JOIN pg_class c ON c.relnamespace = n.oid AND c.relname = t.table_name
@@ -44,7 +43,7 @@ def list_assets(config: dict, cursor: dict) -> tuple[list[dict], dict]:
                 {"name": column, "data_type": data_type}
             )
 
-        for schema, table, table_type, reltuples, row_changes, last_activity in db.execute(
+        for schema, table, table_type, reltuples, row_changes in db.execute(
             TABLES_QUERY, [schemas]
         ).fetchall():
             path = f"{db.info.dbname}.{schema}.{table}"
@@ -66,7 +65,8 @@ def list_assets(config: dict, cursor: dict) -> tuple[list[dict], dict]:
                     # reltuples is -1 until the table has been analyzed.
                     "row_count": None if is_view or reltuples < 0 else reltuples,
                     "size_bytes": None,
-                    "last_modified_at": newest_date(db, schema, table, columns) or last_activity,
+                    # None when the table has no date column: freshness is unknown.
+                    "last_modified_at": newest_date(db, schema, table, columns),
                     "content_hash": fingerprint,
                     "groups": config.get("groups", []),
                 }
@@ -95,7 +95,7 @@ def newest_date(db, schema: str, table: str, columns: list[dict]):
 
 
 def sample_values(config: dict, path: str, column_names: list[str], limit: int = 200) -> dict:
-    """Up to `limit` random non-null values per column, as text.
+    """Up to `limit` random non-null values per column, as text. The same ones each time.
 
     Only for PII scanning and doc generation. Callers must never store what this returns.
     """
@@ -104,6 +104,9 @@ def sample_values(config: dict, path: str, column_names: list[str], limit: int =
     with psycopg.connect(config["dsn"]) as db:
         db.read_only = True
         for name in column_names:
+            # A fixed seed gives the same sample every scan while the data is the same. With a
+            # fresh sample each time, a column near a threshold would gain a tag on some scans.
+            db.execute("SELECT setseed(0.42)")
             # ponytail: ORDER BY random() reads the whole table. Use TABLESAMPLE for huge ones.
             query = sql.SQL(
                 "SELECT {column}::text FROM {table} WHERE {column} IS NOT NULL "

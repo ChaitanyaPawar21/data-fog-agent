@@ -14,7 +14,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { apiFetch } from "@/lib/auth";
-import { type AssetDetail, formatDate } from "@/lib/catalog";
+import { type AssetDetail, formatDate, TRUST_FACTORS } from "@/lib/catalog";
 
 export function AssetView({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params);
@@ -95,6 +95,23 @@ function Asset({ id }: { id: string }) {
           </div>
         ))}
       </dl>
+
+      <section className="flex flex-col gap-1 text-sm">
+        <h2 className="font-medium">Why this trust score</h2>
+        <ul className="flex flex-col gap-0.5">
+          {Object.entries(asset.trust_factors).map(([key, points]) => {
+            const [label, most] = TRUST_FACTORS[key] ?? [key, points];
+            return (
+              <li key={key} className="flex max-w-sm justify-between gap-4">
+                <span className={points ? "" : "text-muted-foreground"}>{label}</span>
+                <span className="tabular-nums">
+                  {points} / {most}
+                </span>
+              </li>
+            );
+          })}
+        </ul>
+      </section>
 
       {asset.columns.length > 0 && (
         <Table>

@@ -64,29 +64,32 @@ def chat(body: ChatRequest, user: User = Depends(get_current_user), db: Session 
     if not config.LLM_API_KEY:
         raise HTTPException(503, "Chat needs LLM_API_KEY to be set on the server.")
 
-    if body.conversation_id is None:
-        conversation = Conversation(
-            org_id=user.org_id, user_id=user.id, title=body.message[:200], messages=[], turns=[]
-        )
-        db.add(conversation)
-        db.commit()
-    else:
-        conversation = get_own_conversation(db, user, body.conversation_id)
+    if body.conversation_id is not None:
+        get_own_conversation(db, user, body.conversation_id)  # a 404 before the stream starts
 
-    events = stream_answer(user.org_id, user.id, conversation.id, body.message)
+    events = stream_answer(user.org_id, user.id, body.conversation_id, body.message)
     # no-transform stops the Next.js proxy from gzipping, which would buffer the stream.
     headers = {"Cache-Control": "no-cache, no-transform", "X-Accel-Buffering": "no"}
     return StreamingResponse(events, media_type="text/event-stream", headers=headers)
 
 
-def stream_answer(org_id: int, user_id: int, conversation_id: int, message: str):
+def stream_answer(org_id: int, user_id: int, conversation_id: int | None, message: str):
     # The request's session may be closed while the answer is still streaming, so this
     # opens its own one.
     with SessionLocal(info={"org_id": org_id}) as db:
         user = db.get(User, user_id)
-        conversation = db.get(Conversation, conversation_id)
-        yield sse({"type": "conversation", "id": conversation.id})
+        if conversation_id is None:
+            # Saved only once it has an answer, so a failed answer or a closed tab doesn't
+            # leave an empty conversation in the list.
+            conversation = Conversation(
+                org_id=org_id, user_id=user_id, title=message[:200], messages=[], turns=[]
+            )
+        else:
+            conversation = db.get(Conversation, conversation_id)
 
+        # ponytail: the whole conversation is sent every time. A very long one will outgrow
+        # the model's context and fail; the person starts a new chat. Summarise old turns
+        # if that ever gets in the way.
         history = list(conversation.messages)
         text, done = "", None
         try:
@@ -107,7 +110,9 @@ def stream_answer(org_id: int, user_id: int, conversation_id: int, message: str)
             {"role": "user", "text": message},
             {"role": "assistant", "text": text, "sources": done["sources"], "table": done["table"]},
         ]
+        db.add(conversation)
         db.commit()
+        yield sse({"type": "conversation", "id": conversation.id})
 
 
 def sse(event: dict) -> str:

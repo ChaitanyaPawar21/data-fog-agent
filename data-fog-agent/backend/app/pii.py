@@ -110,11 +110,15 @@ def name_and_place_analyzer():
     return AnalyzerEngine(nlp_engine=nlp, supported_languages=["en"])
 
 
-def name_and_place_types(value: str) -> set[str]:
-    results = name_and_place_analyzer().analyze(
-        value, language="en", entities=["PERSON", "LOCATION"]
+def name_and_place_types(values: list[str]) -> list[set[str]]:
+    """PERSON / LOCATION found in each value. One batch, so spaCy can process them together."""
+    from presidio_analyzer import BatchAnalyzerEngine
+
+    batch = BatchAnalyzerEngine(analyzer_engine=name_and_place_analyzer())
+    results = batch.analyze_iterator(
+        values, language="en", batch_size=50, entities=["PERSON", "LOCATION"]
     )
-    return {result.entity_type for result in results}
+    return [{result.entity_type for result in found} for found in results]
 
 
 def is_free_text(column_name: str) -> bool:
@@ -134,18 +138,19 @@ def column_pii_types(column_name: str, data_type: str, samples: list[str]) -> se
 
     counts = Counter()
     for value in values:
-        found = regex_types(value)
-        if use_presidio:
-            found |= name_and_place_types(value)
-        counts.update(found)
+        counts.update(regex_types(value))
+    if use_presidio:
+        for found in name_and_place_types(values):
+            counts.update(found)
 
     needed = 1 if free_text else MATCH_SHARE * len(values)
     tagged = {kind for kind, count in counts.items() if count >= needed}
 
     # The small spaCy model often reads an Indian city as a person and the other way round,
     # so a column of names or places can split its hits below the line for each kind.
-    # Together they still show it holds one or the other; tag the more common one.
+    # Together they still show it holds one or the other; tag the more common one. Only for
+    # columns nothing else matched: a PAN column with a few "names" in it is still a PAN column.
     names_and_places = counts["PERSON"] + counts["LOCATION"]
-    if use_presidio and not tagged & {"PERSON", "LOCATION"} and names_and_places >= needed:
+    if use_presidio and not tagged and names_and_places >= needed:
         tagged.add(max(["PERSON", "LOCATION"], key=lambda kind: counts[kind]))
     return tagged

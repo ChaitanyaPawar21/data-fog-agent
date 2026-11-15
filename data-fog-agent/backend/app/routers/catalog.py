@@ -9,6 +9,7 @@ from app.auth import get_current_user
 from app.db import get_db
 from app.models import Asset, AssetColumn, AssetPermission, Group, Source, User
 from app.permissions import visible_asset_ids
+from app.trust import asset_trust_factors
 
 router = APIRouter(prefix="/api/catalog", tags=["catalog"])
 
@@ -42,6 +43,8 @@ class AssetDetail(AssetSummary):
     last_seen_at: datetime | None
     groups: list[str]
     columns: list[ColumnOut]
+    # The points behind trust_score, by factor. Computed live, so it can be a day newer.
+    trust_factors: dict[str, int]
 
 
 def has_pii_column():
@@ -83,6 +86,7 @@ def search_assets(
     type: str | None = None,
     has_pii: bool | None = None,
     include_archived: bool = False,
+    min_trust: int | None = None,
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
@@ -104,6 +108,8 @@ def search_assets(
         query = query.where(has_pii_column() if has_pii else ~has_pii_column())
     if not include_archived:
         query = query.where(Asset.archived.is_(False))
+    if min_trust is not None:
+        query = query.where(Asset.trust_score >= min_trust)
 
     # ponytail: plain text match, capped at 200 rows. The agent's search_catalog (Phase 3)
     # adds vector similarity; add paging here when a catalogue outgrows 200 matches.
@@ -134,6 +140,7 @@ def get_asset(asset_id: int, user: User = Depends(get_current_user), db: Session
         "size_bytes": asset.size_bytes,
         "last_seen_at": asset.last_seen_at,
         "groups": list(groups),
+        "trust_factors": asset_trust_factors(db, asset),
         "columns": [
             ColumnOut(
                 name=c.name, data_type=c.data_type, description=c.description, pii_type=c.pii_type

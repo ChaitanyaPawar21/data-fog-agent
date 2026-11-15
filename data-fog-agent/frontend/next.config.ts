@@ -18,7 +18,11 @@ const nextConfig: NextConfig = {
   // The browser only ever talks to this app. Proxying /api to the backend keeps
   // everything on one origin, so the refresh cookie works without any CORS setup.
   async rewrites() {
-    return [{ source: "/api/:path*", destination: `${backendUrl}/api/:path*` }];
+    return [
+      { source: "/api/:path*", destination: `${backendUrl}/api/:path*` },
+      // The MCP endpoint, so MCP clients can use the same address as the browser.
+      { source: "/mcp", destination: `${backendUrl}/mcp` },
+    ];
   },
 };
 

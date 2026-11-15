@@ -34,6 +34,7 @@ const TOOL_LABELS: Record<string, string> = {
   run_sql: "Running a query",
   search_knowledge: "Reading team notes",
   find_owner: "Looking up the owner",
+  list_pii_columns: "Listing personal data columns",
 };
 
 export default function ChatPage() {
@@ -212,6 +213,7 @@ function AnswerView({ turn }: { turn: Turn }) {
   return (
     <div className="flex flex-col gap-3">
       <Markdown text={turn.text} />
+      {turn.table && <ResultChart table={turn.table} />}
       {turn.table && turn.table.rows.length > 0 && <ResultView table={turn.table} />}
       {turn.sources && turn.sources.length > 0 && (
         <div className="flex flex-wrap gap-2">
@@ -228,6 +230,59 @@ function AnswerView({ turn }: { turn: Turn }) {
         </div>
       )}
     </div>
+  );
+}
+
+function isNumber(value: unknown): boolean {
+  // Postgres numerics arrive as strings like "241626.00".
+  return typeof value === "number" || (typeof value === "string" && /^-?\d+(\.\d+)?$/.test(value));
+}
+
+/** The label and value column to chart, or null when the result isn't a simple "name, number" list. */
+function chartColumns(table: ResultTable): { label: number; value: number } | null {
+  if (table.rows.length < 2 || table.rows.length > 30) return null;
+  const numeric = table.columns.map((_, column) =>
+    table.rows.every((row) => row[column] !== null && isNumber(row[column])),
+  );
+  const label = numeric.indexOf(false);
+  const value = numeric.indexOf(true);
+  if (label === -1 || value === -1) return null;
+  // Bars start at zero, so a negative value has no honest bar.
+  if (table.rows.some((row) => Number(row[value]) < 0)) return null;
+  return { label, value };
+}
+
+/** A plain bar per row, for results like "revenue by month". The table below has every column. */
+function ResultChart({ table }: { table: ResultTable }) {
+  const columns = chartColumns(table);
+  if (!columns) return null;
+  const values = table.rows.map((row) => Number(row[columns.value]));
+  const largest = Math.max(...values, 1);
+
+  return (
+    <figure className="flex flex-col gap-2 rounded-md border p-3">
+      <figcaption className="text-xs text-muted-foreground">
+        {table.columns[columns.value]} by {table.columns[columns.label]}
+      </figcaption>
+      <div className="grid grid-cols-[minmax(0,10rem)_1fr_auto] items-center gap-x-3 gap-y-1.5 text-xs">
+        {table.rows.map((row, index) => {
+          const label = String(row[columns.label] ?? "—");
+          const value = values[index].toLocaleString("en-IN");
+          return (
+            <div key={index} className="contents" title={`${label}: ${value}`}>
+              <span className="truncate">{label}</span>
+              <div className="h-2">
+                <div
+                  className="h-full min-w-px rounded-r bg-chart-2"
+                  style={{ width: `${(values[index] / largest) * 100}%` }}
+                />
+              </div>
+              <span className="text-right tabular-nums">{value}</span>
+            </div>
+          );
+        })}
+      </div>
+    </figure>
   );
 }
 

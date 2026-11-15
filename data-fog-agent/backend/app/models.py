@@ -164,7 +164,9 @@ class Proposal(Base):
     org_id: Mapped[int] = mapped_column(ForeignKey("orgs.id"), index=True)
     type: Mapped[str] = mapped_column(choice("merge", "doc", name="proposal_type"))
     status: Mapped[str] = mapped_column(
-        choice("pending", "approved", "rejected", "done", "failed", name="proposal_status"),
+        choice(
+            "pending", "approved", "rejected", "done", "failed", "undone", name="proposal_status"
+        ),
         server_default="pending",
     )
     payload: Mapped[dict] = mapped_column(JSONB)
@@ -211,6 +213,21 @@ class SyncRun(Base):
     status: Mapped[str] = mapped_column(String(20), server_default="running")
     assets_seen: Mapped[int] = mapped_column(server_default="0")
     error: Mapped[str | None] = mapped_column(Text)
+
+
+class ApiToken(Base):
+    """A personal token for MCP clients. It acts as the user who made it."""
+
+    __tablename__ = "api_tokens"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    org_id: Mapped[int] = mapped_column(ForeignKey("orgs.id"))
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    name: Mapped[str] = mapped_column(String(100))
+    # SHA-256 of the token. The token itself is shown once and never stored.
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True)
+    created_at: Mapped[datetime] = created_at_column()
+    last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class Conversation(Base):

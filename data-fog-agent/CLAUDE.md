@@ -18,6 +18,10 @@ Progress per phase is in `PROGRESS.md`.
   DBs and `demo/output/`, writes `demo/ground_truth.yaml`; demo users' password is `chaiwala-demo`).
   From Git Bash, set `MSYS_NO_PATHCONV=1` first or the `/demo` path gets mangled.
 - Lint: `uv run ruff check . && uv run ruff format --check .` (in `backend/`)
+- New Python dependency: `docker compose exec backend uv add <name>`, then `uv sync` in the backend
+  and worker containers (the image sets `UV_NO_SYNC=1`, so `uv run` never installs by itself),
+  and `docker compose build backend worker` to bake it into the image.
+- MCP: `/mcp`, with an API token from the Settings page. Evals: `uv run python /evals/run_evals.py`.
 - After `docker compose up`, sync the demo sources from the Sources page (admin) or wait for the
   6-hourly cron. Embeddings need `EMBEDDING_API_KEY` (Gemini) in `.env`; without it they're skipped.
 - New frontend route folders aren't always noticed by the dev server on Windows mounts:

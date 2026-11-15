@@ -135,11 +135,67 @@ def rank_scores(embed, texts: dict[str, str]) -> dict:
     }
 
 
+LLM_PICK_PROMPT = """Here is a data catalogue. Each entry starts with its path.
+
+{catalogue}
+
+Question: {query}
+Which entries answer it best? Reply with JSON only:
+{{"paths": ["<best path>", "<2nd>", "<3rd>"]}}"""
+
+
+def llm_rank_scores(model: str, texts: dict[str, str], threads: int = 4) -> dict:
+    """The chat model reads the whole catalogue and picks the best 3 assets per query.
+
+    Only works while the catalogue fits in a prompt; it's here to compare with embeddings.
+    """
+    catalogue = "\n\n".join(f"[{path}]\n{text}" for path, text in texts.items())
+
+    def pick(query: str) -> tuple[list[str], float]:
+        started = time.perf_counter()
+        prompt = LLM_PICK_PROMPT.format(catalogue=catalogue, query=query)
+        response = NVIDIA.chat.completions.create(
+            model=model,
+            max_tokens=docs_gen.MAX_TOKENS,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        reply = (response.choices[0].message.content or "").split("</think>")[-1]
+        match = re.search(r"\{.*\}", reply, re.DOTALL)
+        try:
+            paths = json.loads(match[0])["paths"] if match else []
+        except (json.JSONDecodeError, KeyError, TypeError):
+            paths = []
+        return [str(path).strip("[]") for path in paths], time.perf_counter() - started
+
+    with ThreadPoolExecutor(threads) as pool:
+        picks = list(pool.map(pick, [query for query, _ in SEARCH_QUERIES]))
+
+    hits1 = hits3 = reciprocal = 0.0
+    misses = []
+    for (query, relevant), (paths, _) in zip(SEARCH_QUERIES, picks, strict=True):
+        rank = next((i for i, path in enumerate(paths[:3], start=1) if path in relevant), None)
+        hits1 += rank == 1
+        hits3 += rank is not None
+        reciprocal += 1 / rank if rank else 0
+        if rank is None:
+            misses.append(f"{query!r} -> not in top 3, picked {paths[:1]}")
+    n = len(SEARCH_QUERIES)
+    seconds = [s for _, s in picks]
+    return {
+        "hit@1": hits1 / n,
+        "hit@3": hits3 / n,
+        "mrr": reciprocal / n,
+        "seconds": statistics.median(seconds),
+        "misses": misses,
+    }
+
+
 def compare_search():
     models = {
         "gemini-embedding-2 (1536)": gemini,
         "nemotron-3.5-embed-1b (2048)": nemotron(None),
         "nemotron-3.5-embed-1b (1536)": nemotron(1536),
+        "super-vl reads the catalogue": "nvidia/nemotron-3.5-super-vl-120b-a12b",
     }
     for with_drafts in [False, True]:
         texts = catalogue_texts(with_drafts)
@@ -147,7 +203,10 @@ def compare_search():
         print(f"\n## Search: {len(SEARCH_QUERIES)} queries over {len(texts)} assets, {label}")
         print(f"{'model':32} {'hit@1':>6} {'hit@3':>6} {'MRR':>6} {'secs':>6}")
         for name, embed in models.items():
-            result = rank_scores(embed, texts)
+            if isinstance(embed, str):
+                result = llm_rank_scores(embed, texts)  # secs is the median per query
+            else:
+                result = rank_scores(embed, texts)
             print(
                 f"{name:32} {result['hit@1']:6.0%} {result['hit@3']:6.0%} "
                 f"{result['mrr']:6.2f} {result['seconds']:6.1f}"

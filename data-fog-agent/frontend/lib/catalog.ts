@@ -22,6 +22,7 @@ export type AssetDetail = AssetSummary & {
   last_seen_at: string | null;
   groups: string[];
   columns: { name: string; data_type: string; description: string | null; pii_type: string | null }[];
+  trust_factors: Record<string, number>;
 };
 
 export type Source = {
@@ -41,14 +42,57 @@ export function formatDate(value: string | null): string {
 export const selectClassName =
   "h-8 rounded-lg border border-input bg-transparent px-2 text-sm outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50";
 
-export type DocProposal = {
+export type MergeConflict = {
+  key: string | number;
+  versions: { file: string; row: Record<string, unknown> }[];
+  winner: string;
+};
+
+export type MergePreview = {
+  files: { asset_id: number; path: string; rows: number; last_modified_at: string }[];
+  key_column: string | null;
+  total_rows: number;
+  exact_duplicate_rows: number;
+  conflicting_keys: number;
+  conflicts: MergeConflict[];
+  merged_rows: number;
+  output_name: string;
+  output_path: string | null;
+  groups: string[] | null;
+  error: string | null;
+};
+
+export type Proposal = {
   id: number;
   type: "doc" | "merge";
-  status: "pending" | "approved" | "rejected" | "done" | "failed";
+  status: "pending" | "approved" | "rejected" | "done" | "failed" | "undone";
   created_at: string;
+  reviewed_at: string | null;
   asset_id: number;
   asset_name: string;
   asset_path: string;
-  description: string;
-  columns: { name: string; data_type: string; description: string | null }[];
+  description: string | null;
+  columns: { name: string; data_type: string; description: string | null }[] | null;
+  merge: MergePreview | null;
+};
+
+export type Alert = {
+  id: number;
+  type: "stale" | "schema_change" | "pii_found";
+  message: string;
+  created_at: string;
+  resolved_at: string | null;
+  asset_id: number;
+  asset_name: string;
+  asset_path: string;
+  can_resolve: boolean;
+};
+
+/** Words for each trust factor key the API returns, with the most points it can give. */
+export const TRUST_FACTORS: Record<string, [string, number]> = {
+  freshness: ["Recently modified", 30],
+  owner: ["Has an owner", 20],
+  approved_description: ["Approved description", 20],
+  recently_used: ["Used in the last 30 days", 15],
+  not_a_copy: ["Not an older copy of another asset", 15],
 };

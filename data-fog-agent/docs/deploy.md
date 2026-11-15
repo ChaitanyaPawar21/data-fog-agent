@@ -4,10 +4,10 @@ The whole app runs on one Linux server with Docker Compose. Caddy sits in front,
 HTTPS certificate from Let's Encrypt by itself, and is the only thing reachable from outside.
 
 ```
-internet ──443──► Caddy ──/api/*──► FastAPI (2 workers) ──► Postgres + pgvector
-                    │                    │                      ▲
-                    └──everything else──► Next.js               │
-                                         Redis ◄── arq worker ──┘
+internet ──443──► Caddy ──/api/*, /mcp──► FastAPI (2 workers) ──► Postgres + pgvector
+                    │                          │                      ▲
+                    └──everything else──► Next.js                     │
+                                               Redis ◄── arq worker ──┘
 ```
 
 ## What you need
@@ -38,7 +38,7 @@ ufw allow OpenSSH && ufw allow 80 && ufw allow 443 && ufw --force enable
 
 ```bash
 git clone <your repo URL> data-fog-agent
-cd data-fog-agent
+cd data-fog-agent/data-fog-agent   # the app is in this folder of the repository
 ```
 
 ## 4. Fill in the settings
@@ -86,6 +86,25 @@ dc exec backend uv run python /demo/generate.py
 Then log in as the admin, open **Sources** and click **Sync now** on each source. Demo users log in
 with the password `chaiwala-demo`; change or remove them before real users get access.
 
+## Connecting Claude or another MCP client
+
+Every user can make a personal API token on the **Settings** page. The MCP endpoint is
+`https://<your domain>/mcp` (Streamable HTTP), with the token sent as `Authorization: Bearer <token>`.
+For Claude Code:
+
+```bash
+claude mcp add --transport http data-fog https://<your domain>/mcp --header "Authorization: Bearer <token>"
+```
+
+A token sees exactly what its user sees, personal data stays masked, and every call is in the audit
+log with actor `mcp`. Revoking the token on the Settings page cuts the client off at once.
+
+## Tracing model calls (optional)
+
+Set `LANGFUSE_PUBLIC_KEY`, `LANGFUSE_SECRET_KEY` and `LANGFUSE_HOST` in `.env.prod` and restart
+(`dc up -d`). Every chat and Auto-Docs model call then shows up in Langfuse with its prompt, answer,
+tokens and timing. Leave the keys empty to keep tracing off.
+
 ## Updating
 
 ```bash
@@ -103,7 +122,7 @@ The database holds everything that matters (catalogue, users, chats, audit log).
 mkdir -p /root/backups
 crontab -e
 # add this line:
-0 3 * * * cd /root/data-fog-agent && docker compose -f docker-compose.prod.yml --env-file .env.prod exec -T db pg_dump -U postgres datafog | gzip > /root/backups/datafog-$(date +\%F).sql.gz && find /root/backups -mtime +14 -delete
+0 3 * * * cd /root/data-fog-agent/data-fog-agent && docker compose -f docker-compose.prod.yml --env-file .env.prod exec -T db pg_dump -U postgres datafog | gzip > /root/backups/datafog-$(date +\%F).sql.gz && find /root/backups -mtime +14 -delete
 ```
 
 Copy the backups off the server too (another machine or object storage). A backup that only lives
@@ -128,12 +147,14 @@ dc logs caddy               # certificate problems
 | Browser shows a certificate error | DNS doesn't point at the server yet, or ports 80/443 are blocked. Check `dc logs caddy`. |
 | `set APP_DB_PASSWORD in .env.prod` | A required value is empty in `.env.prod`, or `--env-file .env.prod` was left out. |
 | Changed a password in `.env.prod`, now the DB login fails | Database passwords are only applied when the volume is first created. Change them inside Postgres too (`ALTER ROLE app PASSWORD '...'`). |
-| `429 Too many requests` | Rate limits: 10 logins per minute per IP, 30 chat messages per minute per user. |
+| `429 Too many requests` | Rate limits: 10 logins per minute per IP, 30 chat messages and 60 MCP requests per minute per user. |
+| MCP client gets `401` | The token is wrong or was revoked. Make a new one on the Settings page. |
 
 ## What is protected
 
 - Only ports 80 and 443 are open. Postgres and Redis are on Docker's internal network.
 - HTTPS everywhere, with HSTS. The refresh cookie is `Secure`, `HttpOnly`, `SameSite=Strict`.
-- Login and chat are rate limited.
+- Login, chat and the MCP endpoint are rate limited.
+- MCP clients need a personal API token. Only its SHA-256 hash is stored.
 - The app connects to Postgres as a non-superuser role, so row-level security is enforced.
 - Containers restart on failure and after a reboot; logs are capped at 50 MB per container.

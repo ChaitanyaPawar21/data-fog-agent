@@ -124,6 +124,9 @@ cookie is httpOnly on `/api/auth`.
   names, cities and addresses never reach the model. 69 tests pass.
 - Known: two kind mix-ups from the small model (HR `city` → PERSON, `address` → PERSON+LOCATION).
   `en_core_web_lg` would be more accurate but is a 400 MB download.
+- 2026-11-14: Presidio runs in batches (full scan 48.5s -> 8.6s) and Postgres sampling is seeded, so
+  re-scans give the same verdict; before, borderline columns slowly gained extra kinds. The names/places
+  fallback only applies to columns nothing else matched.
 - Presidio + spaCy are in `pyproject.toml`/`uv.lock`. The image needs `docker compose build` once
   (slow network: the downloads time out at uv's default 30s; `UV_HTTP_TIMEOUT=600` helps).
 
@@ -152,3 +155,120 @@ cookie is httpOnly on `/api/auth`.
 - UI: `/approvals` (draft, column table, approve/reject) in the nav; the asset page links to it while
   a draft is waiting.
 - Verified 2026-11-14: 75 tests pass (incl. no PII in draft prompts, Slack scoping, owner vs non-owner).
+
+## Phase 6 — Trust Score + Alerts
+- `app/trust.py`: score = freshness (30/20/10 for 7/30/90 days) + owner 20 + approved description 20 +
+  used by the agent/MCP in 30 days 15 + not an older copy 15. `refresh_all` rescores every org; the worker
+  runs `trust_job` daily at 03:00 and after every sync.
+- "Used" comes from `audit_log`: every agent tool entry now records `asset_ids`, including what a search
+  returned (search hits aren't citable sources, but they were looked at).
+- Copies, until Phase 7's merge detection exists: same kind (table/file), ≥3 shared column names and
+  ≥60% overlap, grouped transitively; the newest of a group keeps the 15 points. Catches orders/orders_v2,
+  the customers tables (not the cryptic `tbl_cst_mst`), the sales reports and the January exports.
+- Stale alert: not modified in 90 days and used in the last 30, one per stale spell (none since the data
+  last changed); closes on its own when the data changes. Never for Slack channels (a quiet channel isn't
+  stale data). Schema change alert: sync compares columns of an existing asset (added/removed/retyped).
+- Postgres connector: "last modified" no longer falls back to vacuum/analyze times, which made
+  `customers_backup_2023` (text dates) look 2 days old and outrank `customers_new`. No date column now
+  means unknown freshness, 0 points.
+- API: `GET /api/alerts?status=open|resolved&type=`, `POST /api/alerts/{id}/resolve` (admin or owner,
+  audited; alerts on hidden assets are 404). Catalogue: `min_trust` filter, `trust_factors` on the detail.
+- UI: `/alerts` page, trust column + filter in the catalogue, "Why this trust score" on the asset page.
+- Verified 2026-11-14: 81 tests pass. Dev catalogue: orders_v2 50 vs orders 15, customers_new 50 vs
+  customers 15 vs customers_backup_2023 0; stale alerts on orders and customers (still read by the agent).
+- Known: demo tables have fixed dates, so they age into staleness over time (orders_v2 after 2027-01-29);
+  the tests assert the ground-truth stale assets are a subset of what's alerted.
+- UI checked 2026-11-14 in Edge (playwright-core) as a demo member: catalogue trust column/filter, trust
+  breakdown, alerts (Resolve only for owners), approvals, and a real chat answer rendered as a markdown
+  table. No console errors. Known: closing the tab mid-answer leaves an empty conversation (the stream
+  stops before the turn is saved).
+
+## Phase 7 — File Merger
+- `app/merger.py` `find_merge_candidates` (worker: daily 03:30 and after any sync that changed assets):
+  per files source, tabular files with exactly the same column names (lowercased, trimmed) that also
+  have similar names (difflib ≥ 0.6) or ≥ 30% shared rows; copies of copies join one group. Key column:
+  the first `*_id` column that is filled and unique in every file, else whole rows. Files are stacked
+  oldest first; the newest file wins a conflict. The proposal stores files (with content hashes), row
+  counts, exact duplicates, conflicting keys with every version (first 50) and the output name
+  `<shared name>_merged_<date>.<ext>`. The same file set is never proposed twice (unless it failed).
+- Approve → `execute_merge_job`: refuses if any file changed since the proposal (content hash); writes
+  the merged file next to the newest original (never overwrites), moves originals to `_archive/` (puts
+  them back if a move fails), syncs the source, narrows the result's groups to the intersection of the
+  originals', PII-scans it. Audited: approve, merge_file_written, merge_originals_archived, merge_done.
+- Undo (`POST /api/proposals/{id}/undo` → `undo_merge_job`): originals back to their paths (same asset
+  rows, so tags and descriptions survive), merged file moved to `_archive/`, status `undone`
+  (migration 0005). Nothing is ever deleted.
+- Proposals API handles both kinds; a merge needs an admin or the owner of every file.
+- UI: merge preview on `/approvals` (files, row counts, duplicates, conflicts with the kept value),
+  a Merges list with running/done/failed and Undo.
+- `trust.connected_groups` is the shared grouping helper. `trust.older_copy_ids` stays as is: it also
+  covers tables (orders/orders_v2, customers), which merges don't.
+- Verified 2026-11-14: 86 tests pass. Both demo groups detected with the ground-truth numbers (300 → 155
+  duplicates → 4 conflicts → 140 rows; 312 → 156); merged output row count and amount checksum match;
+  undo restores files byte for byte; a file in a finance-only folder makes the result finance-only, and
+  a later sync doesn't widen it. Real run in Edge on the dev stack: approve → done → undo, all 5 demo
+  files byte-identical afterwards.
+- Known: if someone edits the merged file later, sync resets its groups to its folder's groups.
+
+## Phase 8 — MCP Server
+- `app/mcp_server.py`: an MCP server (official `mcp` SDK 2.x, `MCPServer`, Streamable HTTP) served at
+  `/mcp`. Tools: `search_catalog`, `get_schema`, `run_sql`, `search_knowledge`, `find_owner`,
+  `list_pii_columns`, `propose_merge`. Each one is a few lines that call `agent.run_tool` with actor
+  `mcp`, so MCP has no permission code of its own: same `visible_asset_ids`, same `sql_guard`, same
+  PII masking as chat, and every call lands in `audit_log` with `actor = mcp`.
+- Auth: personal API tokens (`routers/tokens.py`, migration 0006 `api_tokens` with row-level
+  security). A token is `dfa_` + 32 random bytes, shown once; only its SHA-256 is stored. Max 20 per
+  user. `TokenAuth`, a small ASGI wrapper in front of the MCP app, answers 401 without a valid token
+  and rate-limits to 60 requests a minute per user. A login JWT is not accepted there.
+- Stateless (`stateless_http=True`): the API runs as 2 worker processes, so an in-memory MCP session
+  would be lost when the next request lands on the other one. The SDK's Host-header check is off: it
+  is meant for unauthenticated localhost servers and would reject requests coming through Caddy.
+- `/mcp` is a plain route, not a mount (a mount answers `/mcp` with a redirect to `/mcp/`). The MCP
+  session manager runs inside the FastAPI lifespan. Caddy and the Next.js dev proxy both pass `/mcp`
+  to the backend, so clients use the same address as the browser.
+- New tools: `list_pii_columns` (asset, column, kinds; never values) is also given to the chat agent.
+  `merger.propose_merge` (MCP only) checks the files are visible, tabular, in one files source and
+  have the same columns, then creates a pending merge proposal with the usual preview. Nothing is
+  merged until someone approves it on `/approvals`.
+- UI: `/settings` (create a token, copy it once, list with last-used date, revoke; how to connect).
+- Fixed on the way: merge detection matched column names ignoring case but then indexed them with the
+  exact case, so two copies with `Order_ID` / `order_id` headers crashed the job. `merger.line_up`
+  now renames every file's columns to the oldest file's spelling, in detection, preview and merge.
+- Verified 2026-11-15: 97 tests pass (9 new in `tests/test_mcp.py`, calling `/mcp` with JSON-RPC:
+  401 without or with a revoked token, hidden assets stay hidden, only SELECT runs, PII stays masked,
+  `propose_merge` leaves files untouched, rate limit). A real MCP client (the SDK's `ClientSession`)
+  against the dev stack, directly and through the Next.js proxy: connected, listed the 7 tools,
+  searched, counted `orders_v2` (3000), got `DELETE` rejected, and saw no HR file as a sales user.
+- Known: `propose_merge` reads the files inside the API request to build the preview. Fine for
+  spreadsheet-sized files; move it to a worker job if files get big.
+
+## Phase 9 — Production polish
+- Langfuse tracing: on when `LANGFUSE_PUBLIC_KEY` and `LANGFUSE_SECRET_KEY` are set. `app/llm.py` then
+  uses Langfuse's drop-in OpenAI client (langfuse 5.x) for chat, Auto-Docs and embeddings. Traces hold
+  what the model was sent, so they are PII-masked. An empty `LANGFUSE_HOST` is dropped at startup.
+- Evals: `evals/questions.yaml` has 51 questions (finding assets, numbers, business rules, personal
+  data, permissions, safety). `run_evals.py` also checks PII recall and merge detection against
+  `ground_truth.yaml`; `--prepare` syncs, scans and scores first. One model error fails one question.
+- CI moved to the repository root (`../.github/workflows/ci.yml`; it never ran from this folder) and
+  got a frontend job (types, lint, build) and an eval job. Without the `LLM_API_KEY` secret the
+  questions are skipped and the other two checks still run.
+- Chat: a result with a name column and a number column gets a bar chart above the table. A new
+  conversation is saved with its first answer, so a closed tab or model error leaves nothing empty.
+- README with a mermaid architecture diagram and `docs/demo.gif` (12 real screenshots); deploy guide
+  covers MCP, Langfuse and the repository layout; `.coverage` is no longer tracked.
+- Verified 2026-11-15: 97 tests pass, ruff clean, tsc + eslint clean. Full eval run on the dev stack:
+  PII recall 100%, 0 merge groups missed, 51/51 questions. Browser walkthrough in Edge as a finance
+  member (chat with chart, catalogue, asset, approvals, alerts, settings token create/revoke): no
+  console errors. Langfuse checked against a local recorder only (trace had the tool calls and the
+  masked question, not the phone number typed in). The production frontend image builds.
+- Backend image: `uv sync` now uses a BuildKit cache mount, so a build that dies on a network
+  timeout resumes instead of starting over, and the image is 1.01 GB instead of 1.72 GB (the package
+  cache is no longer inside it). That exposed a startup problem: `uv run` re-checks the lockfile on
+  every start, and without the cache it downloaded the spaCy model again before the API came up.
+  `UV_NO_SYNC=1` makes `uv run` use the installed environment as it is. After `uv add` in a running
+  container, run `uv sync` to install the package.
+- Verified 2026-11-15 on the rebuilt image: 97 tests pass; backend and worker start in seconds.
+  Production stack run locally over https://localhost (Caddy's own certificate) and torn down:
+  health, login, API token, `/mcp` 401 without a token and the 7 tools with one, a tool call,
+  `/login` `/chat` `/settings` 200, http redirects to https, HSTS and frame headers, `/docs` 404.
+- Still open: CI has not run on GitHub yet, and an actual server.

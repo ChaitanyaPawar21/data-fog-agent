@@ -9,6 +9,8 @@ dependencies = [
     "cryptography>=50.0.2",
     "en-core-web-sm",
     "fastapi>=0.162.5",
+    "langfuse>=5.2.0",
+    "mcp>=2.3.0",
     "openai>=3.49.0",
     "openpyxl>=3.1.5",
     "pandas>=3.1.1",

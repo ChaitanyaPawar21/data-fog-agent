@@ -1,6 +1,7 @@
 import json
 from types import SimpleNamespace
 
+import openai
 import psycopg
 import pytest
 from openai.types.chat import ChatCompletionChunk
@@ -248,8 +249,8 @@ def test_chat_streams_answers_and_keeps_each_users_conversations(synced_demo, cl
     priya = log_in(client, "priya.sharma@chaiwala.co")
 
     first = read_events(client.post("/api/chat", json={"message": "Hi"}, headers=priya))
-    conversation_id = first[0]["id"]
-    assert first[-1]["type"] == "done"
+    assert [event["type"] for event in first[-2:]] == ["done", "conversation"]
+    conversation_id = first[-1]["id"]
 
     second = {"message": "Which orders table?", "conversation_id": conversation_id}
     client.post("/api/chat", json=second, headers=priya)
@@ -272,6 +273,20 @@ def test_chat_streams_answers_and_keeps_each_users_conversations(synced_demo, cl
         client.get(f"/api/chat/conversations/{conversation_id}", headers=rahul).status_code == 404
     )
     assert client.post("/api/chat", json=second, headers=rahul).status_code == 404
+
+
+def test_an_answer_that_fails_leaves_no_empty_conversation(synced_demo, client, monkeypatch):
+    class BrokenLLM(FakeLLM):
+        def create(self, **request):
+            raise openai.APIError("model is down", request=None, body=None)
+
+    monkeypatch.setattr(config, "LLM_API_KEY", "test-key")
+    monkeypatch.setattr(agent, "llm_client", lambda: BrokenLLM())
+    priya = log_in(client, "priya.sharma@chaiwala.co")
+
+    events = read_events(client.post("/api/chat", json={"message": "Hi"}, headers=priya))
+    assert [event["type"] for event in events] == ["error"]
+    assert client.get("/api/chat/conversations", headers=priya).json() == []
 
 
 def test_chat_says_so_when_no_api_key_is_set(synced_demo, client, monkeypatch):
